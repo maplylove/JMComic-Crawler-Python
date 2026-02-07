@@ -1,0 +1,14 @@
+download:
+  image:
+    suffix: .png # 该配置用于把下载的图片转为png格式
+dir_rule:
+  # base_dir: 根目录。
+  # 此配置也支持引用环境变量，例如
+  # base_dir: ${JM_DIR}/下载文件夹/
+  base_dir: C:/Users/admin/Desktop/new/JMComic-Crawler-Python/Download/
+
+folder:
+  # 时间格式：年-月-日_时-分-秒（可自定义，比如只保留年月日：%Y-%m-%d）
+  time_format: "%Y-%m-%d_%H-%M-%S"
+  # 文件夹基础路径（比如放在桌面）
+  base_path: "C:/Users/admin/Desktop/new/JMComic-Crawler-Python/Download/"
