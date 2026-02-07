@@ -111,7 +111,7 @@ class JmOptionPlugin:
     def decide_filepath(self,
                         album: Optional[JmAlbumDetail],
                         photo: Optional[JmPhotoDetail],
-                        filename_rule: str, suffix: str, base_dir: Optional[str],
+                        filename_rule: Optional[str], suffix: Optional[str], base_dir: Optional[str],
                         dir_rule_dict: Optional[dict]
                         ):
         """
@@ -1216,3 +1216,118 @@ class ReplacePathStringPlugin(JmOptionPlugin):
             return original_path
 
         self.option.decide_image_save_dir = new_decide_dir
+
+
+class AdvancedRetryPlugin(JmOptionPlugin):
+    plugin_key = 'advanced_retry'
+
+    def __init__(self, option: JmOption):
+        super().__init__(option)
+        self.retry_config = None
+
+    def invoke(self,
+               retry_config,
+               **kwargs):
+        self.require_param(isinstance(retry_config, dict), '必须配置retry_config为dict')
+        self.retry_config = retry_config
+
+        new_jm_client: Callable = self.option.new_jm_client
+
+        def hook_new_jm_client(*args, **kwargs):
+            return new_jm_client(*args, **kwargs, domain_retry_strategy=self)
+
+        self.option.new_jm_client = hook_new_jm_client
+
+    def __call__(self, client: AbstractJmClient, *args, **kwargs):
+        if args:
+            return self.request_with_retry(client, *args, **kwargs)
+        # init
+        from threading import Lock
+        client.domain_req_failed_counter = {}
+        client.domain_counter_lock = Lock()
+
+    def request_with_retry(self,
+                           client: AbstractJmClient,
+                           request: Callable,
+                           url: str,
+                           is_image: bool,
+                           **kwargs,
+                           ):
+        """
+        实现如下域名重试机制：
+        - 对域名列表轮询请求，配置：retry_rounds
+        - 限制单个域名最大失败次数，配置：retry_domain_max_times
+        - 轮询域名列表前，根据历史失败次数对域名列表排序，失败多的后置
+        """
+
+        def do_request(domain):
+            url_to_use = url
+            if url_to_use.startswith('/'):
+                # path → url
+                url_to_use = client.of_api_url(url, domain)
+                client.update_request_with_specify_domain(kwargs, domain, is_image)
+                jm_log(client.log_topic(), client.decode(url_to_use))
+            elif is_image:
+                # 图片url
+                client.update_request_with_specify_domain(kwargs, None, is_image)
+
+            resp = request(url_to_use, **kwargs)
+            resp = client.raise_if_resp_should_retry(resp, is_image)
+            return resp
+
+        retry_domain_max_times: int = self.retry_config['retry_domain_max_times']
+        retry_rounds: int = self.retry_config['retry_rounds']
+        for rindex in range(retry_rounds):
+            domain_list = self.get_sorted_domain(client, retry_domain_max_times)
+            for i, domain in enumerate(domain_list):
+                if self.failed_count(client, domain) >= retry_domain_max_times:
+                    continue
+
+                try:
+                    return do_request(domain)
+                except Exception as e:
+                    from common import traceback_print_exec
+                    traceback_print_exec()
+                    jm_log('req.error', str(e))
+                    self.update_failed_count(client, domain)
+
+        return client.fallback(request, url, 0, 0, is_image, **kwargs)
+
+    def get_sorted_domain(self, client: JmcomicClient, times):
+        domain_list = client.get_domain_list()
+        return sorted(
+            filter(lambda d: self.failed_count(client, d) < times, domain_list),
+            key=lambda d: self.failed_count(client, d)
+        )
+
+    # noinspection PyUnresolvedReferences
+    def update_failed_count(self, client: AbstractJmClient, domain: str):
+        with client.domain_counter_lock:
+            client.domain_req_failed_counter[domain] = self.failed_count(client, domain) + 1
+
+    @staticmethod
+    def failed_count(client: JmcomicClient, domain: str) -> int:
+        # noinspection PyUnresolvedReferences
+        return client.domain_req_failed_counter.get(domain, 0)
+
+
+class DownloadCoverPlugin(JmOptionPlugin):
+    plugin_key = 'download_cover'
+
+    def invoke(self,
+               dir_rule: dict,
+               size='',
+               photo: JmPhotoDetail = None,
+               album: JmAlbumDetail = None,
+               downloader=None,
+               **kwargs) -> None:
+        album_id = album.id if album else photo.album_id
+        save_path = self.decide_filepath(
+            album, photo,
+            None, None, None,
+            dir_rule
+        )
+        if self.option.download.cache and os.path.exists(save_path):
+            self.log(f'album-{album_id}的封面已存在，跳过下载: [{save_path}]', 'skip')
+            return
+        downloader.client.download_album_cover(album_id, save_path, size)

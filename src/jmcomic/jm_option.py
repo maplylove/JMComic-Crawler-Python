@@ -60,10 +60,16 @@ class CacheRegistry:
 class DirRule:
     RULE_BASE_DIR = 'Bd'
 
-    def __init__(self, rule: str, base_dir=None):
+    def __init__(self, rule: str, base_dir=None, normalize_zh=None):
+        """
+        :param rule: DSL rule
+        :param base_dir: base directory
+        :param normalize_zh: 'zh-cn'|'zh-tw'| or None. 控制是否以及如何进行繁简体归一化，默认 None
+        """
         base_dir = JmcomicText.parse_to_abspath(base_dir)
         self.base_dir = base_dir
         self.rule_dsl = rule
+        self.normalize_zh = normalize_zh
         self.parser_list: List[Tuple[str, Callable]] = self.get_rule_parser_list(rule)
 
     def decide_image_save_dir(self,
@@ -88,7 +94,9 @@ class DirRule:
                 jm_log('dir_rule', f'路径规则"{rule}"的解析出错: {e}, album={album}, photo={photo}')
                 raise e
             if parser != self.parse_bd_rule:
-                path = fix_windir_name(str(path)).strip()
+                # 根据配置 normalize_zh 进行繁简体统一
+                conv_path = JmcomicText.to_zh(str(path), self.normalize_zh)
+                path = fix_windir_name(conv_path).strip()
 
             path_ls.append(path)
 
@@ -122,9 +130,9 @@ class DirRule:
     @classmethod
     def parse_f_string_rule(cls, album, photo, rule: str):
         properties = {}
-        if album:
+        if album is not None:
             properties.update(album.get_properties_dict())
-        if photo:
+        if photo is not None:
             properties.update(photo.get_properties_dict())
         return rule.format(**properties)
 
@@ -158,7 +166,8 @@ class DirRule:
         if rule.startswith(('A', 'P')):
             return cls.parse_detail_rule
 
-        ExceptionTool.raises(f'不支持的rule配置: "{rule}"')
+        return cls.parse_f_string_rule
+        # ExceptionTool.raises(f'不支持的rule配置: "{rule}"')
 
     @classmethod
     def apply_rule_to_filename(cls, album, photo, rule: str) -> str:
@@ -200,6 +209,7 @@ class JmOption:
             dir_rule={
                 'rule': self.dir_rule.rule_dsl,
                 'base_dir': self.dir_rule.base_dir,
+                'normalize_zh': self.dir_rule.normalize_zh,
             },
             download=self.download.src_dict,
             client=self.client.src_dict,
@@ -325,6 +335,7 @@ class JmOption:
             'dir_rule': {
                 'rule': self.dir_rule.rule_dsl,
                 'base_dir': self.dir_rule.base_dir,
+                'normalize_zh': self.dir_rule.normalize_zh,
             },
             'download': self.download.src_dict,
             'client': self.client.src_dict,
@@ -362,7 +373,13 @@ class JmOption:
         """
         return self.new_jm_client(**kwargs)
 
-    def new_jm_client(self, domain_list=None, impl=None, cache=None, **kwargs) -> Union[JmHtmlClient, JmApiClient]:
+    def new_jm_client(self,
+                      domain_list=None,
+                      impl=None,
+                      cache=None,
+                      domain_retry_strategy=None,
+                      **kwargs
+                      ) -> Union[JmHtmlClient, JmApiClient]:
         """
         创建新的Client（客户端），不同Client之间的元数据不共享
         """
@@ -419,10 +436,11 @@ class JmOption:
         if clazz == AbstractJmClient or not issubclass(clazz, AbstractJmClient):
             raise NotImplementedError(clazz)
 
-        client: AbstractJmClient = clazz(
+        client: JmcomicClient = clazz(
             postman=postman,
             domain_list=decide_domain_list(),
             retry_times=retry_times,
+            domain_retry_strategy=domain_retry_strategy,
         )
 
         # enable cache
