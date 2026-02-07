@@ -1,0 +1,6 @@
+
+folder:
+  # 时间格式：年-月-日_时-分-秒（可自定义，比如只保留年月日：%Y-%m-%d）
+  time_format: "%Y-%m-%d_%H-%M-%S"
+  # 文件夹基础路径（比如放在桌面）
+  base_path: "C:/Users/admin/Desktop/new/JMComic-Crawler-Python/Download/"
